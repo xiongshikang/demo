@@ -28,7 +28,12 @@ DATA_BODY_KEY = "text"
 DATA_LABEL_KEY = "label"
 
 # 加载数据集
-raw_datasets = load_dataset(DATASET_NAME)
+#raw_datasets = load_dataset(DATASET_NAME)
+arrow_dir_cnndm = '/root/autodl-tmp/demo'
+raw_datasets = load_dataset(path=arrow_dir_cnndm, data_files=
+{'train': os.path.join(arrow_dir_cnndm, 'rotten_tomatoes-train.arrow'),
+ 'validation': os.path.join(arrow_dir_cnndm, 'rotten_tomatoes-validation.arrow'),
+ 'test': os.path.join(arrow_dir_cnndm, 'rotten_tomatoes-test.arrow')})
 
 # 训练集
 raw_train_dataset = raw_datasets["train"]
