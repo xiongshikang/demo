@@ -13,11 +13,35 @@ import os, re
 from tqdm import tqdm
 import torch.nn as nn
 
-# 数据集名称
-DATASET_NAME = "wikitext"
+MAX_LEN=32             # 最大长度
+SEED=42                 # 随机种子
+LR=2e-5                 # 学习率
+BATCH_SIZE=8            # BATCH_SIZE
+WARMUP_RATIO=0.1        # warmup比例
+INTERVAL=100             # 每多少步打一次 log / 做一次 eval
 
+MODEL_NAME = "gpt2"                     # 模型名称
+# MODEL_NAME = "gpt2-large"
+
+DATASET_NAME = "rotten_tomatoes"        # 数据集名称
+DATA_BODY_KEY = "text"
+DATA_LABEL_KEY = "label"
+#model_name_or_path = "E:/qian/ai/fastApi/models"
+
+
+os.environ['HF_ENDPOINT']='https://hf-mirror.com'
 # 加载数据集
-raw_datasets = load_dataset('wikitext', 'wikitext-103-raw-v1')
+raw_datasets = load_dataset(DATASET_NAME)
+#arrow_dir_cnndm = '/root/autodl-tmp/demo'
+#arrow_dir_cnndm = 'E:/qian/ai/fastApi/demo/datasets'
+#raw_datasets = load_dataset(path=arrow_dir_cnndm, data_files=
+#{'train': os.path.join(arrow_dir_cnndm, 'rotten_tomatoes-train.arrow'),
+# 'validation': os.path.join(arrow_dir_cnndm, 'rotten_tomatoes-validation.arrow'),
+# 'test': os.path.join(arrow_dir_cnndm, 'rotten_tomatoes-test.arrow')})
+
+
+
+
 
 # 训练集
 raw_train_dataset = raw_datasets["train"]
@@ -25,30 +49,25 @@ raw_train_dataset = raw_datasets["train"]
 # 验证集
 raw_valid_dataset = raw_datasets["validation"]
 
-# 模型名称
-MODEL_NAME = "gpt2"
 
-# 加载tokenizer
+columns = raw_train_dataset.column_names
+
+# 设置随机种子
+transformers.set_seed(SEED)
+
+# 定义tokenizer
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME,trust_remote_code=True)
+#tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 tokenizer.pad_token_id = 0
 
-# 其它相关公共变量赋值
-# 设置随机种子：同个种子的随机序列可复现
-transformers.set_seed(42)
 
-# 标签集
 named_labels = ['neg', 'pos']
 
-# 标签转 token_id
 label_ids = [
-    tokenizer(named_labels[i], add_special_tokens=False)["input_ids"][0]
+    tokenizer(named_labels[i],add_special_tokens=False)["input_ids"][0]
     for i in range(len(named_labels))
 ]
-
-MAX_LEN=32   #最大序列长度（输入+输出）
-DATA_BODY_KEY = "text" # 数据集中的输入字段名
-DATA_LABEL_KEY = "label" #数据集中输出字段名
 
 # 定义数据处理函数，把原始数据转成input_ids, attention_mask, labels
 def process_fn(examples):
@@ -83,10 +102,11 @@ def process_fn(examples):
 tokenized_train_dataset = raw_train_dataset.map(
     process_fn,
     batched=True,
-    remove_columns=[DATA_BODY_KEY, DATA_LABEL_KEY],  # 指定要移除的列
+    remove_columns=columns,
     desc="Running tokenizer on train dataset",
 )
 
+# 处理验证数据集
 # 打印部分样本
 for i, example in enumerate(tokenized_train_dataset):
     if i < 5:  # 打印前5个样本
@@ -103,7 +123,7 @@ for i, example in enumerate(tokenized_train_dataset):
 tokenized_valid_dataset = raw_valid_dataset.map(
     process_fn,
     batched=True,
-    remove_columns=[DATA_BODY_KEY, DATA_LABEL_KEY],  # 指定要移除的列
+    remove_columns=columns,
     desc="Running tokenizer on validation dataset",
 )
 
@@ -113,12 +133,13 @@ collater = DataCollatorWithPadding(
     tokenizer=tokenizer, return_tensors="pt",
 )
 
-LR=2e-5         # 学习率
-BATCH_SIZE=8    # Batch大小
-INTERVAL=100    # 每多少步打一次 log / 做一次 eval
+#model_path = "C:\Users\86182\.cache\huggingface\hub\models--gpt2snapshots/607a30d783dfa663caf39e06633721c8d4cfcd7e"
 
-# 加载模型
+# 定义模型
 model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, trust_remote_code=True)
+#model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True)
+# 节省显存
+model.gradient_checkpointing_enable()
 
 # 定义训练参数
 training_args = TrainingArguments(
@@ -133,10 +154,29 @@ training_args = TrainingArguments(
     logging_steps=INTERVAL,             # 每N步log一次
     save_steps=INTERVAL,                # 每N步保存一个checkpoint
     learning_rate=LR,                   # 学习率
+    warmup_ratio=WARMUP_RATIO,          # warmup比例
 )
 
-# 节省显存
-model.gradient_checkpointing_enable()
+
+def compute_metric(eval_predictions):
+    predictions, labels = eval_predictions
+
+    label_indices = (labels != -100).nonzero()
+    actual_labels = labels[label_indices]
+
+    label_indices = (label_indices[0], label_indices[1]-1)
+    selected_logits = predictions[label_indices]
+
+    predicted_labels = selected_logits[:,label_ids].argmax(axis=-1)
+
+    predicted_labels = np.array(label_ids)[predicted_labels]
+
+    correct_predictions = (predicted_labels == actual_labels).sum()
+
+    accuracy = correct_predictions / len(labels)
+
+    return { "acc" : accuracy }
+
 
 # 定义训练器
 trainer = Trainer(
@@ -145,9 +185,9 @@ trainer = Trainer(
     data_collator=collater, # 数据校准器
     train_dataset=tokenized_train_dataset,  # 训练集
     eval_dataset=tokenized_valid_dataset,   # 验证集
-    # compute_metrics=compute_metric,         # 计算自定义评估指标
+    compute_metrics=compute_metric,         # 计算自定义指标
 )
 
 
 # 开始训练
-#trainer.train()
+trainer.train()
